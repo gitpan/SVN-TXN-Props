@@ -1,0 +1,7 @@
+Changes
+Makefile.PL
+MANIFEST
+README
+t/SVN-TXN-Props.t
+lib/SVN/TXN/Props.pm
+META.yml                                 Module meta-data (added by MakeMaker)
