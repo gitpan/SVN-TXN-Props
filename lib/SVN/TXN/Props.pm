@@ -1,6 +1,5 @@
 package SVN::TXN::Props;
 
-use 5.008007;
 use strict;
 use warnings;
 use Tie::Hash;
@@ -14,38 +13,21 @@ use AutoLoader qw(AUTOLOAD);
 
 our @ISA = qw(Exporter Tie::ExtraHash);
 
-# Items to export into callers namespace by default. Note: do not export
-# names by default without a very good reason. Use EXPORT_OK instead.
-# Do not simply export all your public functions/methods/constants.
-
-# This allows declaration	use SVN::TXN::Props ':all';
-# If you do not need this, moving things directly into @EXPORT or @EXPORT_OK
-# will save memory.
-our %EXPORT_TAGS = ( 'all' => [ qw(
-	get_txn_props
-) ] );
-
-our @EXPORT_OK = ( @{ $EXPORT_TAGS{'all'} } );
+our @EXPORT_OK = qw( get_txn_props );
 our @EXPORT = qw();
-our $VERSION = '1.00';
+our $VERSION = '1.01';
 
-sub get_txn_props {
-	my ($repository_path, $txn_name, $hash) = @_;
-	$hash ||= {};
-	tie %$hash, 'SVN::TXN::Props', $repository_path, $txn_name;
-	return $hash;
+sub get_txn_props ($;$) {
+	my $txn = open_transaction(@_);
+	my %hash;
+	tie %hash, 'SVN::TXN::Props', $txn;
+	return \%hash;
 }
 
-sub TIEHASH ($$) {
+sub TIEHASH ($$;$) {
 	my $proto = shift;
 	my $class = ref($proto) || $proto;
-	my ($repository_path, $txn_name) = @_;
-	defined $repository_path and defined $txn_name or
-		croak "repository_path and txn_name arguments are required";
-
-	my $repos = SVN::Repos::open($repository_path);
-	my $txn = $repos->fs->open_txn($txn_name);
-
+	my $txn = open_transaction(@_);
 	my $self = bless [ $txn->proplist(), $txn ];
 	return $self;
 }
@@ -53,28 +35,50 @@ sub TIEHASH ($$) {
 sub STORE ($$$) {
 	my $self = shift;
 	my ($key, $value) = @_;
-	$self->[1]->change_prop($key, $value);
+	$self->txn->change_prop($key, $value);
 	$self->SUPER::STORE(@_);
 }
 
 sub DELETE ($$) {
 	my $self = shift;
 	my ($key) = @_;
-	$self->[1]->change_prop($key, undef);
+	$self->txn->change_prop($key, undef);
 	$self->SUPER::DELETE(@_);
 }
 
 sub CLEAR ($) {
 	my $self = shift;
 	foreach my $key (keys %{$self->[0]}) {
-		$self->[1]->change_prop($key, undef);
+		$self->txn->change_prop($key, undef);
 	}
 	$self->SUPER::CLEAR(@_);
 }
 
-# Preloaded methods go here.
+sub open_transaction ($;$) {
+	my $first_arg = shift
+		or croak "invalid arguments";
+	if (ref($first_arg) and $first_arg->isa('_p_svn_fs_txn_t')) {
+		# already have a transaction
+		return $first_arg;
+	}
+	my $repos;
+	if (ref($first_arg) and $first_arg->isa('_p_svn_repos_t')) {
+		# already have an open repository
+		$repos = $first_arg;
+	} else {
+		# probably a repository path
+		$repos = SVN::Repos::open($first_arg);
+	}
+	my $txn_name = shift
+		or croak "invalid arguments: transaction name not specified";
+	return $repos->fs->open_txn($txn_name);
+}
 
-# Autoload methods go after =cut, and are processed by the autosplit program.
+sub txn() {
+	my $self = shift;
+	return $self->[1];
+}
+
 
 1;
 __END__
@@ -85,8 +89,22 @@ SVN::TXN::Props - Provides a hash interface to Subversion transaction properties
 =head1 SYNOPSIS
 
   use SVN::TXN::Props qw(get_txn_props);
-  my $props = get_txn_props('/svnrepo', '1-0');
+
+  my $repository_path = '/svnrepo';
+  my $txn_name = '1-0';
+
+  my $props = get_txn_props($repository_path, $txn_name);
   $props->{'svn:author'} = 'nobody';
+
+  my %props;
+  tie %props, 'SVN::TXN::Props', $repository_path, $txn_name;
+  $props{'svn:author'} = 'nobody';
+
+  my $txn = SVN::Repos::open($repository_path)->fs->open_txn($txn_name);
+  $props = get_txn_props($txn);
+  tie %props, 'SVN::TXN::Props', $txn;
+
+  my @paths = keys %{tied(%props)->txn->root->paths_changed()};
 
 =head1 DESCRIPTION
 
@@ -101,12 +119,29 @@ perl tie function, eg:
   tie %props, 'SVN::TXN::Props', $repository_path, $txn_name;
   $props{'svn:author'} = 'nobody';
 
+The arguments to the tie function can either be the path to a repository
+and the name of a transaction, or an already open transaction object:
+
+  my $txn = SVN::Repos::open($repository_path)->fs->open_txn($txn_name);
+  tie %props, 'SVN::TXN::Props', $txn;
+
 Alternatively, the function get_txn_props can be imported, which will
 returned an already tied hash reference, eg:
 
   use SVN::TXN::Props qw(get_txn_props);
   my $props = get_txn_props($repository_path, $txn_name);
   $props->{'svn:author'} = 'nobody';
+
+As with the tie call, a single open transaction object can be passed 
+to get_txn_props instead of the repository_path and txn_name.
+
+The underlying SVN::TXN::Props object is returned by the tie call, or
+can be obtained from the tied hash using the perl tied() function.  This
+provides a single method txn() that will return the underlying subversion
+transaction object, eg:
+
+  my $txn_props = tie %props, 'SVN::TXN::Props', $repository_path, $txn_name;
+  my @paths = keys %{$txn_props->txn->root->paths_changed()};
 
 =head1 SEE ALSO
 
